@@ -1,29 +1,22 @@
 # 共享核心：模型加载、检测（可调阈值/推理分辨率）、多种打码渲染
 # 被 webui.py 和 auto_censor.py 共用
-import io
 import os
-import shutil
-import subprocess
-import tempfile
 import urllib.request
 
 import cv2
 import numpy as np
 import onnxruntime
 
-try:
-    from PIL import Image
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 固定常量名，直接拼接（与 os.path.join 等价，且均为代码内字面量）
 MODEL_640M = BASE_DIR + os.sep + "640m.onnx"
-# 回退模型（主模型下载失败时使用，README 提供官方下载地址）
+# 回退模型（主模型下载失败时使用，发布版 Release 附件亦提供）
 MODEL_320N = BASE_DIR + os.sep + "320n.onnx"
-# 国内可达的模型镜像（GitHub release 原地址在国内网络会被拦截）
-MODEL_640M_URL = "https://hf-mirror.com/zhangsongbo365/nudenet_onnx/resolve/main/640m.onnx"
+# 模型下载源（按顺序尝试）：本仓库 Release 附件优先，其次 hf-mirror 镜像
+MODEL_SOURCES = [
+    "https://github.com/Bigesila-B/ai-auto-censor/releases/latest/download/640m.onnx",
+    "https://hf-mirror.com/zhangsongbo365/nudenet_onnx/resolve/main/640m.onnx",
+]
 
 LABELS = [
     "FEMALE_GENITALIA_COVERED",
@@ -59,19 +52,48 @@ CENSOR_MODES = ("mosaic", "blur", "solid", "img")
 ALLOWED_RESOLUTIONS = (320, 640, 960, 1280)
 
 
+def _host_allowed(url):
+    """仅允许 http/https 且 host 不是本机/私网/保留地址（防 SSRF）。"""
+    try:
+        from urllib.parse import urlparse
+        import ipaddress
+        p = urlparse(url)
+        if p.scheme not in ("http", "https") or not p.hostname:
+            return False
+        host = p.hostname.strip("[]")
+        if host in ("localhost",) or host.endswith(".localhost"):
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                return False
+        except ValueError:
+            pass  # 域名（非 IP）交由 DNS 解析后由系统栈处理
+        return True
+    except Exception:
+        return False
+
+
 def ensure_model():
-    """优先使用 640m 权重；缺失时自动下载，失败则回退到自带的 320n。"""
+    """优先使用 640m 权重；缺失时按 MODEL_SOURCES 顺序自动下载，全失败回退 320n。"""
     if os.path.exists(MODEL_640M):
         return MODEL_640M
-    print("未找到 640m.onnx，开始下载（约 100MB，来自 hf-mirror.com 镜像）…")
-    try:
-        urllib.request.urlretrieve(MODEL_640M_URL, MODEL_640M + ".part")
-        os.replace(MODEL_640M + ".part", MODEL_640M)
-        print("640m.onnx 下载完成")
-        return MODEL_640M
-    except Exception as e:
-        print(f"640m 下载失败（{e}），回退到 320n 模型")
-        return MODEL_320N
+    print("未找到 640m.onnx，开始自动下载（约 100MB）…")
+    for src in MODEL_SOURCES:
+        if not _host_allowed(src):
+            continue
+        tag = "本仓库 Release" if "Bigesila-B" in src else "hf-mirror 镜像"
+        print(f"  尝试下载源：{tag} …")
+        try:
+            urllib.request.urlretrieve(src, MODEL_640M + ".part")
+            os.replace(MODEL_640M + ".part", MODEL_640M)
+            print(f"640m.onnx 下载完成（来自{tag}）")
+            return MODEL_640M
+        except Exception as e:
+            print(f"  该源下载失败（{e}）")
+    print("全部下载源失败，回退到 320n 模型（可从 Release 页手动下载 640m.onnx 放到程序目录）")
+    return MODEL_320N
 
 
 class Detector:
