@@ -249,6 +249,19 @@ footer{color:var(--dim);font-size:11px;text-align:center;padding:18px 0 26px}
 .set-row input[type=range]{flex:1}
 .set-actions{display:flex;gap:8px;margin-top:16px}
 .set-actions .mini{flex:1;text-align:center;padding:8px 0}
+
+/* 灯箱（点击卡片全图预览） */
+#lightbox{position:fixed;inset:0;background:rgba(6,8,12,.9);z-index:80;display:none;
+  align-items:center;justify-content:center;flex-direction:column;gap:12px;padding:20px}
+#lightbox.show{display:flex}
+#lightbox img,#lightbox video{max-width:94vw;max-height:84vh;border-radius:10px;
+  background:#000;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+#lightbox video{max-height:78vh}
+#lbCap{color:var(--dim);font-size:12px;font-family:var(--mono)}
+#lbClose{position:absolute;top:16px;right:20px;width:40px;height:40px;border-radius:10px;
+  background:rgba(255,255,255,.08);color:var(--text);display:grid;place-items:center;font-size:20px}
+#lbClose:hover{background:rgba(255,255,255,.18)}
+#lightbox .lb-hint{color:var(--dim);font-size:11px}
 @media (max-width:900px){.wrap{grid-template-columns:1fr}aside{position:static;max-height:none}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -435,6 +448,12 @@ footer{color:var(--dim);font-size:11px;text-align:center;padding:18px 0 26px}
       <button type="button" class="mini" id="setDone">完成</button>
     </div>
   </div>
+</div>
+<div id="lightbox" aria-modal="true" role="dialog" aria-label="全图预览">
+  <button type="button" id="lbClose" title="关闭" aria-label="关闭预览">×</button>
+  <img id="lbMedia" alt="" hidden>
+  <video id="lbVideo" controls playsinline hidden></video>
+  <div id="lbCap"></div>
 </div>
 <footer>检测与打码全部在本机完成 · 队列按顺序逐张执行<span id="audioNote"></span></footer>
 
@@ -1110,15 +1129,44 @@ drop.addEventListener("click", () => fileInput.click());
 drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); fileInput.click(); } });
 fileInput.addEventListener("change", () => { addFiles(fileInput.files); fileInput.value = ""; });
 
-/* 手动模式下点击图片卡片 → 载入编辑器 */
+/* 点击卡片：手动模式图片载入编辑器，其余打开全图预览灯箱 */
 $("grid").addEventListener("click", e => {
-  if (runMode !== "manual") return;
   if (e.target.closest("a") || e.target.closest("button")) return;
   const card = e.target.closest(".card");
   if (!card) return;
   const job = jobs.find(j => j.el === card);
-  if (job && !job.media) loadEditorFromJob(job);
+  if (!job) return;
+  if (runMode === "manual" && !job.media && job.st !== "done"){
+    loadEditorFromJob(job);
+    return;
+  }
+  openLightbox(job);
 });
+
+/* ---------- 灯箱：点击卡片全图预览 ---------- */
+const lb = $("lightbox"), lbImg = $("lbMedia"), lbVideo = $("lbVideo"), lbCap = $("lbCap");
+function openLightbox(job){
+  const media = job.censUrl || job.origUrl;   // 有结果优先展示结果
+  if (job.media && job.kind === "video"){
+    lbImg.hidden = true; lbVideo.hidden = false;
+    lbVideo.src = media; lbVideo.play().catch(() => {});
+  } else {
+    lbVideo.hidden = true; lbVideo.pause(); lbVideo.removeAttribute("src");
+    lbImg.hidden = false; lbImg.src = media;
+  }
+  lbCap.textContent = job.file.name + (job.censUrl ? "（打码结果）" : "");
+  lb.classList.add("show");
+  document.body.style.overflow = "hidden";
+}
+function closeLightbox(){
+  lb.classList.remove("show");
+  lbVideo.pause(); lbVideo.removeAttribute("src");
+  lbImg.removeAttribute("src");
+  document.body.style.overflow = "";
+}
+$("lbClose").onclick = closeLightbox;
+lb.addEventListener("click", e => { if (e.target === lb) closeLightbox(); });
+addEventListener("keydown", e => { if (e.key === "Escape" && lb.classList.contains("show")) closeLightbox(); });
 
 let dragDepth = 0;
 addEventListener("dragover", e => e.preventDefault());
