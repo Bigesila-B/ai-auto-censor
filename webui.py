@@ -399,6 +399,7 @@ footer{color:var(--dim);font-size:11px;text-align:center;padding:18px 0 26px}
   </div>
 
   <div class="actions ai-only">
+    <button type="button" class="mini" id="downloadAll">打包下载全部</button>
     <button type="button" class="mini" id="rerun">用当前设置重新处理</button>
     <button type="button" class="mini" id="clear">清空</button>
   </div>
@@ -1027,6 +1028,119 @@ $("clear").onclick = () => {
   $("grid").replaceChildren();
   $("empty").style.display = "";
   stat(); refreshStart();
+};
+
+/* ---------- 一键打包下载全部结果 ---------- */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++){
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf){
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+// 生成 STORE(无压缩) 格式 zip；name 需为 ASCII（中文名用 UTF-8 标志）
+function buildZip(entries){ // entries: [{name, data: Uint8Array}]
+  const enc = new TextEncoder();
+  const chunks = [], central = [];
+  let offset = 0;
+  for (const e of entries){
+    const nameU8 = enc.encode(e.name);
+    const crc = crc32(e.data);
+    const n = e.data.length;
+    // local file header (30 bytes)
+    const head = new DataView(new ArrayBuffer(30));
+    head.setUint32(0, 0x04034b50, true);   // PK\x03\x04
+    head.setUint16(4, 20, true);           // version needed
+    head.setUint16(6, 0x0800, true);       // general purpose (UTF-8)
+    head.setUint16(8, 0, true);            // method: STORE
+    head.setUint16(10, 0, true);           // mod time
+    head.setUint16(12, 0, true);           // mod date
+    head.setUint32(14, crc, true);         // CRC-32
+    head.setUint32(18, n, true);           // compressed size
+    head.setUint32(22, n, true);           // uncompressed size
+    head.setUint16(26, nameU8.length, true); // filename length
+    head.setUint16(28, 0, true);           // extra length
+    chunks.push(new Uint8Array(head.buffer), nameU8, e.data);
+    // central directory header (46 bytes)
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true);    // PK\x01\x02
+    cen.setUint16(4, 20, true);            // version made by
+    cen.setUint16(6, 20, true);            // version needed
+    cen.setUint16(8, 0x0800, true);        // flags
+    cen.setUint16(10, 0, true);            // method
+    cen.setUint16(12, 0, true);            // time
+    cen.setUint16(14, 0, true);            // date
+    cen.setUint32(16, crc, true);          // CRC-32
+    cen.setUint32(20, n, true);            // compressed
+    cen.setUint32(24, n, true);            // uncompressed
+    cen.setUint16(28, nameU8.length, true);// filename length
+    cen.setUint16(30, 0, true);            // extra length
+    cen.setUint16(32, 0, true);            // comment length
+    cen.setUint16(34, 0, true);            // disk number
+    cen.setUint16(36, 0, true);            // internal attrs
+    cen.setUint32(38, 0, true);            // external attrs
+    cen.setUint32(42, offset, true);       // local header offset
+    central.push({ cen, nameU8 });
+    offset += 30 + nameU8.length + n;
+  }
+  const cdStart = offset;
+  let cdSize = 0;
+  for (const c of central){ chunks.push(new Uint8Array(c.cen.buffer), c.nameU8); cdSize += 46 + c.nameU8.length; }
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);      // PK\x05\x06
+  end.setUint16(8, central.length, true);  // total entries (disk)
+  end.setUint16(10, central.length, true); // total entries
+  end.setUint32(12, cdSize, true);         // central dir size
+  end.setUint32(16, cdStart, true);        // central dir offset
+  end.setUint16(20, 0, true);              // comment length
+  chunks.push(new Uint8Array(end.buffer));
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let p = 0;
+  for (const c of chunks){ out.set(c, p); p += c.length; }
+  return out;
+}
+$("downloadAll").onclick = async () => {
+  const done = jobs.filter(j => j.st === "done");
+  if (!done.length){ $("stat").textContent = "还没有已完成的结果，先打码再打包"; return; }
+  $("downloadAll").disabled = true;
+  $("stat").textContent = "正在打包 " + done.length + " 个文件…";
+  try {
+    const entries = [];
+    for (const j of done){
+      // 图片结果：base64 dataURL；GIF/视频：blob URL
+      const ext = (j.kind === "gif" ? "gif" : j.kind === "video" ? (j.res && j.res.ext) || "mp4" : (j.res && j.res.fmt) || "jpg");
+      const baseName = j.file.name.replace(/\\.[^.]+$/, "") + safeSuffix() + "." + ext;
+      let buf;
+      if (j.censUrl.startsWith("data:")){
+        const b64 = j.censUrl.split(",")[1];
+        const bin = atob(b64);
+        buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      } else {
+        const blob = await (await fetch(j.censUrl)).blob();
+        buf = new Uint8Array(await blob.arrayBuffer());
+      }
+      entries.push({ name: baseName, data: buf });
+    }
+    const zip = buildZip(entries);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
+    a.download = "打码结果_" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".zip";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    $("stat").textContent = "已打包下载 " + done.length + " 个文件";
+  } catch (e){
+    $("stat").textContent = "打包失败: " + (e.message || e);
+  }
+  $("downloadAll").disabled = false;
 };
 
 /* ---------- 手动编辑器 ---------- */
