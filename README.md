@@ -71,7 +71,9 @@ python auto_censor.py --list-classes   # 查看全部可打码类别
 python selftest.py
 ```
 
-覆盖参数校验、三种打码渲染、图片遮挡、检测器边界、HTTP 接口、GIF / 视频任务、输出格式等（当前 70 项断言）。
+覆盖参数校验、三种打码渲染、图片遮挡、检测器边界、HTTP 接口、GIF / 视频任务、输出格式等（当前 73 项断言）。
+
+> 想给本项目贡献代码 / 接手开发？请看 [DEVELOPMENT.md](DEVELOPMENT.md)：架构说明、HTTP 接口、安全约定与发布流程。
 
 ## 项目结构
 
