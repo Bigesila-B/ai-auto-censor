@@ -908,7 +908,8 @@ async function pollMedia(job){
       } else {
         const v = document.createElement("video");
         v.src = job.censUrl; v.controls = true; v.loop = true;
-        v.muted = true; v.playsInline = true;
+        v.playsInline = true; v.preload = "metadata";
+        // 不强制静音/自动播放：让用户点播放即可听到声音
         el.querySelector("img").replaceWith(v);
         el.querySelector(".peek").style.display = "none";
       }
