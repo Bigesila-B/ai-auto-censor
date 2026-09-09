@@ -5,6 +5,7 @@
 import base64
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -32,6 +33,61 @@ MEDIA_KEEP = 6                    # 最多保留的已完成任务结果数
 MEDIA_LOCK = threading.Lock()
 MEDIA = {}                        # id -> job dict
 MEDIA_MIME = {"gif": "image/gif", "webm": "video/webm", "mp4": "video/mp4"}
+CURRENT_PORT = 8080   # 运行时由 __main__ 更新
+
+# ---------------- 局域网访问 ----------------
+LAN_HOST = "0.0.0.0"
+LOOPBACK_HOST = "127.0.0.1"
+CURRENT_LAN = False   # 运行时由 __main__ 更新：是否允许局域网访问
+
+
+def _lan_ips():
+    """返回本机局域网 IP 列表（尽力而为，优先真实局域网段）。"""
+    ips = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None,
+                                       socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                ips.append(ip)
+    except Exception:
+        pass
+    # 补充 UDP connect 法拿到的出口 IP
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ips.append(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    # 去重并排序：优先 192.168/10./172.16-31 真实局域网段，其次其他
+    uniq = sorted(set(ips))
+    def rank(ip):
+        if ip.startswith("192.168."):
+            return 0
+        if ip.startswith("10."):
+            return 1
+        if ip.startswith("172."):
+            try:
+                o = int(ip.split(".")[1])
+                if 16 <= o <= 31:
+                    return 2
+            except Exception:
+                pass
+        return 3
+    return sorted(uniq, key=rank)
+
+
+def _restart_with_mode(mode):
+    """LAN 模式切换：用 os.execv 替换自身进程（同端口、不同绑定），
+    旧进程随即退出，避免新旧进程争抢端口。"""
+    import os as _os
+    python = sys.executable
+    args = [python, _os.path.abspath(__file__), str(CURRENT_PORT)]
+    if mode == "lan":
+        args.append("--lan")
+    _os.execv(python, args)   # 替换当前进程，不会返回
+
 
 # ---------------- 遮挡图片素材（图片打码模式） ----------------
 ASSET_LIMIT = 8 * 1024 * 1024     # 单张遮挡图上限
@@ -443,6 +499,14 @@ footer{color:var(--dim);font-size:11px;text-align:center;padding:18px 0 26px}
       <label class="main"></label>
       <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="setRemember"> 记住打码设置（下次打开自动恢复）</label>
     </div>
+    <div class="set-row">
+      <label class="main"></label>
+      <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="setLan"> 允许局域网访问（手机/其他电脑可访问）</label>
+    </div>
+    <div class="set-row" id="lanInfo" style="display:none">
+      <label class="main"></label>
+      <span class="note" id="lanAddr" style="margin:0"></span>
+    </div>
     <div class="set-actions">
       <button type="button" class="mini" id="setReset">恢复默认</button>
       <button type="button" class="mini" id="setDone">完成</button>
@@ -594,9 +658,7 @@ function syncSettingsUI(){
   $("setAutoDl").checked = SET.autoDl;
   $("setRemember").checked = SET.remember;
 }
-function openSettings(){ syncSettingsUI(); $("settingsOverlay").style.display = "grid"; }
 function closeSettings(){ $("settingsOverlay").style.display = "none"; }
-$("settingsBtn").onclick = openSettings;
 $("setClose").onclick = closeSettings;
 $("setDone").onclick = closeSettings;
 $("settingsOverlay").addEventListener("click", e => {
@@ -620,6 +682,35 @@ $("setReset").onclick = () => {
   shown("strength"); shown("margin", "%"); shown("conf");
   renderClasses(DEFAULT_CLASSES); refreshModeUI();
 };
+
+/* ---------- 局域网访问开关 ---------- */
+async function refreshLanUI(){
+  try {
+    const j = await (await fetch("/lan")).json();
+    $("setLan").checked = !!j.lan;
+    const addrs = [ "http://localhost:" + j.port ];
+    (j.ips || []).forEach(ip => addrs.push("http://" + ip + ":" + j.port));
+    $("lanAddr").textContent = (j.lan ? "已开启，局域网设备可访问：" : "已关闭，仅本机可访问。开启后：") + addrs.join("  ·  ");
+    $("lanInfo").style.display = "";
+  } catch (e) { $("lanInfo").style.display = "none"; }
+}
+$("setLan").onchange = async e => {
+  const want = e.target.checked;
+  $("setLan").disabled = true;
+  try {
+    const j = await (await fetch("/lan?mode=" + (want ? "on" : "off"), { method: "POST" })).json();
+    if (j.ok){
+      if (j.restarting){
+        $("lanAddr").textContent = "正在重启服务以生效…约 3 秒后请刷新页面";
+        $("lanInfo").style.display = "";
+        setTimeout(() => location.reload(), 3500);
+      }
+    } else if (j.error){ alert("切换失败：" + j.error); $("setLan").checked = !want; }
+  } catch (err){ alert("切换失败：" + err); $("setLan").checked = !want; }
+  $("setLan").disabled = false;
+};
+openSettings = () => { syncSettingsUI(); refreshLanUI(); $("settingsOverlay").style.display = "grid"; };
+$("settingsBtn").onclick = openSettings;   // 绑定到带 /lan 状态刷新的新版
 
 /* ---------- 遮挡图片（AI 图片遮挡模式） ---------- */
 let stampFile = null, stampAssetId = null;
@@ -1254,6 +1345,11 @@ class Handler(BaseHTTPRequestHandler):
             with open(p, "rb") as fh:
                 self.wfile.write(fh.read())
             return
+        if path == "/lan":
+            # 当前局域网访问状态
+            self._json(200, {"lan": CURRENT_LAN, "port": CURRENT_PORT,
+                             "ips": _lan_ips()})
+            return
         self._send(404, b"not found", "text/plain")
 
     def _cfg_from_query(self, q):
@@ -1289,6 +1385,32 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         q = parse_qs(parsed.query)
+
+        if parsed.path == "/lan":
+            # 切换局域网访问：on=允许, off=仅本机；os.execv 重启服务生效
+            mode = q.get("mode", [""])[0]
+            target = "lan" if mode == "on" else "local"
+            cur = "lan" if CURRENT_LAN else "local"
+            if target == cur:
+                self._json(200, {"ok": True, "restarting": False,
+                                 "lan": CURRENT_LAN})
+                return
+            # 先把"即将重启"响应发给前端，再替换进程
+            body = json.dumps({"ok": True, "restarting": True,
+                               "lan": target == "lan",
+                               "port": CURRENT_PORT},
+                              ensure_ascii=False).encode("utf-8")
+            self._send(200, body, "application/json")
+            self.wfile.flush()
+            try:
+                _restart_with_mode("lan" if target == "lan" else "local")
+            except Exception as e:
+                # execv 失败：尽力报错
+                try:
+                    self._json(500, {"error": "重启失败: %s" % e})
+                except Exception:
+                    pass
+            return
 
         if parsed.path == "/asset":
             length = int(self.headers.get("Content-Length", 0))
@@ -1381,12 +1503,23 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    port = 8080
-    if len(sys.argv) > 1:
-        try:
-            port = int(sys.argv[1])
-        except ValueError:
-            pass
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"NudeNet 自动打码网页版已启动: http://localhost:{port}  (Ctrl+C 退出)")
+    import argparse as _argparse
+    ap = _argparse.ArgumentParser(description="打码工作台")
+    ap.add_argument("port", nargs="?", type=int, default=8080,
+                    help="端口（默认 8080）")
+    ap.add_argument("--lan", action="store_true",
+                    help="允许局域网访问（绑定 0.0.0.0）")
+    args = ap.parse_args()
+    port = args.port
+    bind_host = LAN_HOST if args.lan else LOOPBACK_HOST
+    CURRENT_PORT = port       # 模块级变量，供 /lan 端点使用
+    CURRENT_LAN = args.lan    # 是否允许局域网访问
+
+    server = ThreadingHTTPServer((bind_host, port), Handler)
+    mode = "局域网" if args.lan else "仅本机"
+    print(f"NudeNet 自动打码网页版已启动 ({mode}) : http://localhost:{port}")
+    if args.lan:
+        for ip in _lan_ips():
+            print(f"  局域网访问: http://{ip}:{port}")
+    print("  Ctrl+C 退出")
     server.serve_forever()

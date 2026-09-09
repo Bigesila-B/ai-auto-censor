@@ -27,6 +27,10 @@
 2. 缺失模型自动下载（640m 约 100MB，来自国内镜像）
 3. 启动服务并自动打开浏览器（默认 `http://localhost:8080`，可传参换端口）
 
+> 局域网访问：`启动打码工作台.bat 8080 --lan` 即可让手机 / 同一局域网内其他电脑访问；
+> 也可在网页右上角「设置」→「允许局域网访问」开关直接切换（自动重启生效）。
+> 访问地址形如 `http://192.168.x.x:8080`（局域网 IP 会显示在启动日志与设置面板中）。
+
 ### 手动安装
 
 ```bash
@@ -44,6 +48,7 @@ pip install numpy opencv-python onnxruntime Pillow
 # 3. 启动
 python check_deps.py   # 依赖检测与自动安装
 python webui.py        # 或 python webui.py 9000 指定端口
+python webui.py 8080 --lan   # 允许局域网访问（设置里也能切换）
 ```
 
 ### 命令行打码

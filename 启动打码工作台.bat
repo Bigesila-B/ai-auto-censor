@@ -7,6 +7,11 @@ rem 端口：默认 8080，可带参数指定，如  启动打码工作台.bat 9
 set PORT=8080
 if not "%~1"=="" set PORT=%~1
 
+rem 参数2 传 --lan 允许局域网访问，如  启动打码工作台.bat 8080 --lan
+set LAN=
+if "%~2"=="--lan" set LAN=--lan
+if "%~1"=="--lan" set LAN=--lan & set PORT=8080
+
 rem 优先 python，其次 py 启动器
 set PY=python
 where python >nul 2>nul || set PY=py
@@ -33,9 +38,9 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [2/2] 启动服务…
-rem 3 秒后自动打开浏览器（等服务就绪）
+rem 5 秒后自动打开浏览器（等服务就绪）
 start "" /min cmd /c "timeout /t 5 /nobreak >nul & start http://localhost:%PORT%"
-%PY% webui.py %PORT%
+%PY% webui.py %PORT% %LAN%
 
 echo.
 echo [服务已退出] 若上方提示端口被占用，说明已有一个实例在运行，直接用浏览器打开 http://localhost:%PORT% 即可，或换端口启动。
