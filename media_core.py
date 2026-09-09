@@ -2,6 +2,7 @@
 # 路径安全说明：所有文件路径均为代码内常量，用 pathlib 在 tempfile 创建的
 # 目录下拼出；客户端文件名/扩展名不进入任何路径。
 import io
+import os
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,19 @@ try:
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
+
+
+def _find_ffmpeg():
+    """定位可用的 ffmpeg：优先 imageio-ffmpeg 自带二进制（pip 装即可，
+    无需系统级安装），其次系统 PATH。"""
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.isfile(exe):
+            return exe
+    except Exception:
+        pass
+    return shutil.which("ffmpeg")
 
 
 def _default_detect_every(kind, n):
@@ -59,12 +73,13 @@ def process_video(data, cfg, detector, stamp=None, detect_every=None, progress=N
 
     输入统一写入临时目录内的固定名文件（OpenCV 的 ffmpeg 后端按内容探测容器，
     不依赖扩展名，客户端文件名不进入任何路径）。
-    编码优先级：本机有 ffmpeg -> 一律 H.264 mp4（含音频，重编码 aac）；
-    无 ffmpeg 时按 prefer 选择：webm（VP80，浏览器可预览，失败退 mp4v）或
-    直接 mp4（mp4v，体积小但浏览器通常无法预览）。
+    编码优先级：有 ffmpeg（imageio-ffmpeg 自带或系统）-> 一律 H.264 mp4
+    （含音频，重编码 aac）；无 ffmpeg 时按 prefer 选择：webm（VP80，浏览器
+    可预览，无音频，失败退 mp4v）或直接 mp4（mp4v，体积小但通常无法预览）。
     返回 (bytes, 扩展名, info)
     """
-    has_ff = shutil.which("ffmpeg") is not None
+    ff = _find_ffmpeg()
+    has_ff = ff is not None
     work = Path(tempfile.mkdtemp(prefix="censor_vid_"))
     try:
         src = work / "in.bin"
@@ -88,10 +103,10 @@ def process_video(data, cfg, detector, stamp=None, detect_every=None, progress=N
             outpath = work / "out.mp4"
             out_ext = "mp4"
             proc = subprocess.Popen(
-                ["ffmpeg", "-y", "-loglevel", "error",
+                [ff, "-y", "-loglevel", "error",
                  "-f", "rawvideo", "-pix_fmt", "bgr24",
                  "-s", f"{w}x{h}", "-r", f"{fps:.4f}", "-i", "pipe:0",
-                 "-i", src,
+                 "-i", str(src),
                  "-map", "0:v:0", "-map", "1:a:0?",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
                  "-pix_fmt", "yuv420p", "-movflags", "+faststart",

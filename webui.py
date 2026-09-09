@@ -19,12 +19,11 @@ import numpy as np
 
 from censor_core import (Detector, LABELS, DEFAULT_CLASSES,
                          ALLOWED_RESOLUTIONS, build_cfg, censor_regions, ensure_model)
-from media_core import process_gif, process_video
-from shutil import which as _which
+from media_core import process_gif, process_video, _find_ffmpeg
 
 ensure_model()
 detector = Detector()  # 640m @ 640，每次请求可按参数切换推理分辨率
-HAS_FFMPEG = _which("ffmpeg") is not None
+HAS_FFMPEG = _find_ffmpeg() is not None
 
 # ---------------- 媒体任务（GIF/视频） ----------------
 MEDIA_ROOT = Path(tempfile.mkdtemp(prefix="censor_media_"))
@@ -472,7 +471,7 @@ if (window.matchMedia){
   });
 }
 if (!HAS_FFMPEG)
-  $("audioNote").textContent = " · 本机未装 ffmpeg：视频输出为 WebM 静音格式，安装 ffmpeg 后自动带音频";
+  $("audioNote").textContent = " · 未找到 ffmpeg：视频输出为 WebM 静音格式，安装 imageio-ffmpeg 后自动带音频";
 
 /* ---------- 处理模式（AI / 手动） ---------- */
 let runMode = "ai";

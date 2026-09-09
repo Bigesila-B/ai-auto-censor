@@ -13,6 +13,7 @@ REQUIRED = [
     ("cv2", "opencv-python"),
     ("onnxruntime", "onnxruntime"),
     ("PIL", "Pillow"),  # GIF 打码需要
+    ("imageio_ffmpeg", "imageio-ffmpeg"),  # 自带 ffmpeg，视频输出带音频
 ]
 MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
@@ -88,11 +89,15 @@ def main():
 
     # 可选组件
     print("\n== 可选组件 ==")
-    if shutil.which("ffmpeg"):
-        print("  [OK]   ffmpeg（视频输出将包含音频）")
-    else:
-        print("  [提示] 未安装 ffmpeg：视频输出为 WebM 静音格式（GIF 不受影响）")
-        print("         如需视频带音频：winget install ffmpeg 或从 ffmpeg.org 下载")
+    try:
+        from media_core import _find_ffmpeg
+        if _find_ffmpeg():
+            print("  [OK]   ffmpeg（视频输出将包含音频）")
+        else:
+            print("  [提示] 未找到 ffmpeg：视频输出为 WebM 静音格式")
+            print("         安装 imageio-ffmpeg 后自动带音频（pip install imageio-ffmpeg）")
+    except Exception:
+        print("  [提示] ffmpeg 状态未知（视频可能静音）")
 
     print("\n依赖检查完成 ✓")
     return 0
