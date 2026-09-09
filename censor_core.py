@@ -50,6 +50,9 @@ DEFAULT_CLASSES = [
 
 CENSOR_MODES = ("mosaic", "blur", "solid", "img")
 ALLOWED_RESOLUTIONS = (320, 640, 960, 1280)
+# 长图自动切片：长宽比超过该值、且短边不小于该像素时启用切片检测
+SLICE_RATIO = 2.5
+SLICE_MIN_SIDE = 480
 
 
 def _host_allowed(url):
@@ -111,10 +114,69 @@ class Detector:
         self.resolution = inference_resolution
 
     def detect(self, image, conf=0.25, iou=0.45):
-        """image: BGR ndarray。返回 [{'class','score','box':[x,y,w,h]}, ...]"""
+        """image: BGR ndarray。返回 [{'class','score','box':[x,y,w,h]}, ...]
+
+        长图（长宽比 > SLICE_RATIO）自动切片检测：按固定块尺寸切成若干
+        重叠小块，各自送模型，再把检测框映射回原图坐标并用 NMS 去重。
+        """
+        h, w = image.shape[:2]
+        long_ratio = max(w / h, h / w)
+        if long_ratio > SLICE_RATIO and min(w, h) >= SLICE_MIN_SIDE:
+            return self._detect_sliced(image, conf, iou)
         blob, padded = self._preprocess(image)
         outputs = self.session.run(None, {self.input_name: blob})
         return self._postprocess(outputs, padded, image, conf, iou)
+
+    def _detect_sliced(self, image, conf, iou):
+        """长图切片检测：小块 + 重叠 + 映射回原坐标 + NMS 去重。"""
+        h, w = image.shape[:2]
+        # 块尺寸取短边（长图短边通常够宽），限制在 480~960
+        tile = min(max(min(h, w), 480), 960)
+        overlap = int(tile * 0.2)   # 20% 重叠，避免目标被切在边界
+        step = tile - overlap
+        boxes, scores, class_ids = [], [], []
+        y0 = 0
+        while y0 < h:
+            y1 = min(y0 + tile, h)
+            patch = image[y0:y1, :, :]
+            if patch.shape[0] < 64:   # 尾部残片太小直接跳过
+                break
+            blob, padded = self._preprocess(patch)
+            outputs = self.session.run(None, {self.input_name: blob})
+            preds = np.transpose(np.squeeze(outputs[0]))
+            scale = padded / self.resolution
+            ph = patch.shape[0]
+            for row in preds:
+                cs = row[4:]
+                ms = float(cs.max())
+                if ms < conf:
+                    continue
+                cx, cy, pw, phh = row[:4]
+                x = (cx - pw / 2) * scale
+                y = (cy - phh / 2) * scale
+                x = max(0.0, min(x, w))
+                y = max(0.0, min(y, ph))
+                pw = min(pw * scale, w - x)
+                phh = min(phh * scale, ph - y)
+                if pw <= 0 or phh <= 0:
+                    continue
+                # 映射回原图坐标
+                boxes.append([x, y + y0, pw, phh])
+                scores.append(ms)
+                class_ids.append(int(cs.argmax()))
+            y0 += step
+        if not boxes:
+            return []
+        indices = np.array(cv2.dnn.NMSBoxes(boxes, scores, conf, iou)).flatten()
+        detections = []
+        for i in indices:
+            x, y, bw, bh = boxes[i]
+            detections.append({
+                "class": LABELS[class_ids[i]],
+                "score": float(scores[i]),
+                "box": [int(x), int(y), int(bw), int(bh)],
+            })
+        return detections
 
     def _preprocess(self, mat):
         mat_c3 = cv2.cvtColor(mat, cv2.COLOR_RGBA2BGR)

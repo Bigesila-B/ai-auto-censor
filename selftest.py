@@ -147,6 +147,25 @@ dets_hi = det.detect(src, conf=0.04)
 det.resolution = 640
 check("分辨率切换生效（1280 候选不少于 640）", len(dets_hi) >= len(dets))
 
+print("== 3b. 长图自动切片 ==")
+long_img = np.zeros((2000, 400, 3), np.uint8)   # 5:1 超长图
+long_img[:, :, 0] = 80
+# 放几个"目标"色块（模拟人物区块）
+cv2.rectangle(long_img, (120, 200), (280, 500), (200, 200, 200), -1)
+cv2.rectangle(long_img, (120, 900), (280, 1200), (200, 200, 200), -1)
+cv2.rectangle(long_img, (120, 1500), (280, 1800), (200, 200, 200), -1)
+dets_long = det.detect(long_img, conf=0.05)
+check("长图切片检测运行不崩溃", isinstance(dets_long, list))
+ok_bounds = all(0 <= b["box"][0] and 0 <= b["box"][1] and
+                b["box"][0] + b["box"][2] <= long_img.shape[1] and
+                b["box"][1] + b["box"][3] <= long_img.shape[0]
+                for b in dets_long)
+check("长图检测框全部在图界内", ok_bounds, str(dets_long[:3]))
+# 普通图仍走原路径（不切片）
+normal = np.full((600, 800, 3), 100, np.uint8)
+dets_n = det.detect(normal, conf=0.05)
+check("常规图不触发切片（0 检测）", len(dets_n) == 0)
+
 print("== 4. HTTP 接口 ==")
 import webui  # 会创建 640m 检测器
 
