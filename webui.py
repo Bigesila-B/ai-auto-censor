@@ -21,8 +21,8 @@ import numpy as np
 from censor_core import (Detector, LABELS, DEFAULT_CLASSES,
                          ALLOWED_RESOLUTIONS, build_cfg, censor_regions, ensure_model)
 from media_core import process_gif, process_video, _find_ffmpeg
-from yolo_world import (normalize_world_classes, get_world_detector,
-                        WORLD_PREFIX)
+from yolo_world import (normalize_world_classes, expand_words,
+                        get_world_detector, WORLD_PREFIX)
 
 ensure_model()
 detector = Detector()  # 640m @ 640，每次请求可按参数切换推理分辨率
@@ -33,8 +33,8 @@ def _detect_combined(img, cfg):
     """NudeNet + YOLO-World（可选）合并检测。
 
     cfg["world_classes"] 为空时与原 detector.detect 行为完全一致（零开销）。
-    非空时附加 YOLO-World 检测；模型缺失/下载失败抛 RuntimeError（由调用方
-    转为任务失败并提示用户）。
+    非空时附加 YOLO-World 检测（同义词扩展 + world_conf 独立阈值）；
+    模型缺失/下载失败抛 RuntimeError（由调用方转为任务失败并提示用户）。
     返回 (合并检测结果, 启用的 WORLD 类别标识列表)。
     """
     detector.resolution = cfg["res"]
@@ -42,10 +42,12 @@ def _detect_combined(img, cfg):
     world_words = cfg.get("world_classes") or []
     if not world_words:
         return detections, []
+    all_words = expand_words(world_words)
     wd = get_world_detector()
-    embeds = wd.get_embeds(world_words)
-    world_dets = wd.detect(img, world_words, embeds=embeds, conf=cfg["conf"])
-    enabled = [WORLD_PREFIX + w for w in world_words]
+    embeds = wd.get_embeds(all_words)
+    world_dets = wd.detect(img, all_words, embeds=embeds,
+                           conf=cfg.get("world_conf", 0.15))
+    enabled = [WORLD_PREFIX + w for w in all_words]
     return detections + world_dets, enabled
 
 # ---------------- 媒体任务（GIF/视频） ----------------
@@ -127,13 +129,14 @@ def _media_worker(job_id, data, kind, cfg, stamp):
 
     try:
         # YOLO-World 懒加载放在任务线程里做（下载可能耗时，避免卡 HTTP 响应）
-        world_words = cfg.get("world_classes") or []
+        world_words = expand_words(cfg.get("world_classes") or [])
         world_detector = get_world_detector() if world_words else None
         world_embeds = (world_detector.get_embeds(world_words)
                         if world_detector else None)
         enabled_world = [WORLD_PREFIX + w for w in world_words]
         if enabled_world and cfg["classes"] is not None:
             cfg["classes"] = list(cfg["classes"]) + enabled_world
+        cfg["world_classes"] = world_words
         detector.resolution = cfg["res"]
         if kind == "gif":
             out, ext, info = process_gif(data, cfg, detector, stamp=stamp,
@@ -437,7 +440,8 @@ footer{color:var(--dim);font-size:11px;text-align:center;padding:18px 0 26px}
   <input type="text" id="worldClasses" class="tinput" spellcheck="false"
          placeholder="英文逗号分隔，如: gun, knife, face">
   <div class="note" style="margin:4px 0 10px">用 AI 检测任意目标并打码（需填英文，如 gun=枪、face=人脸）。
-    首次使用会自动下载约 300MB 模型，之后按填写的词自动缓存。留空则不启用。</div>
+    单复数会自动补同义词（如 foot 自动加 feet）。首次使用会自动下载约 300MB 模型，
+    之后按填写的词自动缓存。留空则不启用。自定义类别使用固定敏感度（不受上方阈值滑块影响）。</div>
 
   <div class="actions ai-only">
     <button type="button" class="mini" id="downloadAll">打包下载全部</button>

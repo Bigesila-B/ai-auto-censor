@@ -285,6 +285,9 @@ def build_cfg(mode="mosaic", strength=35, margin=15, color="#000000",
         # 支持字符串（逗号分隔）或列表；归一化交给 yolo_world（延迟导入避免循环依赖）
         from yolo_world import normalize_world_classes
         world_classes = normalize_world_classes(world_classes)
+    # 世界模型置信度与滑块解耦：其分数天然偏低（且受 bg 背景类压制），
+    # 上限钳到 0.15，保证低阈值词（face/feet 等）默认就能出框
+    world_conf = min(conf, 0.15)
     return {
         "mode": mode,
         "strength": strength,
@@ -294,6 +297,7 @@ def build_cfg(mode="mosaic", strength=35, margin=15, color="#000000",
         "conf": conf,
         "asset": asset,
         "world_classes": world_classes,
+        "world_conf": world_conf,
     }
 
 

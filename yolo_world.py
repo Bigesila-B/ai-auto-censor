@@ -49,6 +49,43 @@ CTX_LEN = 77                # 上下文长度
 BOS_ID = 49406              # <start_of_text>
 EOS_ID = 49407              # <end_of_text>
 
+# 同义词表：部分词的复数/变体在模型里响应更好（实测 foot=0.17 vs feet=0.33）。
+# 用户输入的词会同时保留原词与同义词，任一命中即打码。
+SYNONYMS = {
+    "foot": "feet",
+    "hand": "hands",
+    "toe": "toes",
+    "ear": "ears",
+    "eye": "eyes",
+    "breast": "breasts",
+    "butt": "buttocks",
+    "genital": "genitalia",
+}
+
+
+def expand_words(words):
+    """扩展用户词表：每个词附加其同义词（去重、保持顺序）。"""
+    out = list(words)
+    for w in words:
+        syn = SYNONYMS.get(w)
+        if syn and syn not in out:
+            out.append(syn)
+    return out
+
+
+# 背景类：Ultralytics 官方建议类别列表尾部追加空串作背景锚。
+# 实测（zidane/bus 多图验证）：没有它，部分词（如 face）单独检测时 sigmoid
+# 分数整体为 0；追加后恢复正常（face 0.0 -> 0.29）。注意：bg 通道会压低
+# person 等词的分数（0.9 -> 0.2~0.4，依组合而定），因此世界模型的置信度
+# 阈值与 NudeNet 滑块解耦（见 censor_core.build_cfg 的 world_conf）。
+BG_CLASS = ""
+
+
+def with_bg(words):
+    """类别词表尾部追加背景类，返回 (扩展词表, 背景通道下标)。"""
+    return list(words) + [BG_CLASS], len(words)
+
+
 # 检测器输入分辨率（与 NudeNet 默认一致，CPU 速度可接受）
 WORLD_RESOLUTION = 640
 
@@ -204,13 +241,15 @@ class WorldDetector:
         self._infer_lock = threading.Lock()
 
     def get_embeds(self, words):
-        """words: 归一化后的类别词列表。返回 [K,512] 嵌入；命中缓存零文本开销。"""
+        """words: 归一化类别词列表。返回扩展词表（含背景类）的 [K+1,512] 嵌入；
+        命中缓存零文本开销。缓存 key 只含真实词（背景类是固定附加项）。"""
+        ext, _nbg = with_bg(words)
         emb = self.embed_cache.get(words)
-        if emb is not None:
+        if emb is not None and emb.shape[0] == len(ext):
             return emb
         if self._text_encoder is None:
             self._text_encoder = TextEncoder()
-        emb = self._text_encoder.encode(words)
+        emb = self._text_encoder.encode(ext)
         self.embed_cache.put(words, emb)
         return emb
 
@@ -253,12 +292,16 @@ class WorldDetector:
 
     def _run(self, blob, words, embeds, conf, iou, scale, pad_w, pad_h,
              ox, oy, img_w, img_h):
-        """单块（或全图）推理 + 后处理。坐标映射回 (ox,oy) 偏移的原图区域。"""
-        txt = embeds[np.newaxis].astype(np.float32)  # [1,K,512]
+        """单块（或全图）推理 + 后处理。坐标映射回 (ox,oy) 偏移的原图区域。
+
+        embeds 为扩展词表（含背景类）的嵌入；背景通道（下标 len(words)）
+        只作激活锚，不产出检测框。
+        """
+        txt = embeds[np.newaxis].astype(np.float32)  # [1,K+1,512]
         with self._infer_lock:
             outputs = self.session.run(
                 None, {self.input_name: blob, "txt_feats": txt})
-        preds = np.squeeze(outputs[0], axis=0).T     # [8400, 4+K]
+        preds = np.squeeze(outputs[0], axis=0).T     # [8400, 4+K+1]
         ncls = len(words)
         boxes, scores, class_ids = [], [], []
         for row in preds:

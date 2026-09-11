@@ -184,6 +184,17 @@ check("world 单词限长 64",
 cfg_w = build_cfg(world_classes="Gun, knife")
 check("build_cfg 归一化 world_classes", cfg_w["world_classes"] == ["gun", "knife"])
 check("build_cfg 缺省 world_classes 为空", build_cfg()["world_classes"] == [])
+check("world_conf 与滑块解耦（上限 0.15）",
+      build_cfg(conf=0.25)["world_conf"] == 0.15
+      and build_cfg(conf=0.08)["world_conf"] == 0.08)
+
+# 同义词扩展
+check("同义词扩展 foot->feet",
+      _yw.expand_words(["foot"]) == ["foot", "feet"])
+check("同义词扩展不重复添加",
+      _yw.expand_words(["foot", "feet"]) == ["foot", "feet"])
+check("无同义词的词原样保留",
+      _yw.expand_words(["gun", "knife"]) == ["gun", "knife"])
 
 # 下载源 SSRF 校验
 from censor_core import _host_allowed

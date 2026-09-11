@@ -63,7 +63,7 @@ def process_gif(data, cfg, detector, stamp=None, detect_every=None, progress=Non
             if world is not None and cfg.get("world_classes"):
                 dets = dets + world.detect(bgr, cfg["world_classes"],
                                            embeds=world_embeds,
-                                           conf=cfg["conf"])
+                                           conf=cfg.get("world_conf", 0.15))
         censor_regions(bgr, dets, cfg, stamp=stamp)
         frames.append(Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
         if progress:
@@ -156,7 +156,7 @@ def process_video(data, cfg, detector, stamp=None, detect_every=None, progress=N
                 if world is not None and cfg.get("world_classes"):
                     dets = dets + world.detect(frame, cfg["world_classes"],
                                                embeds=world_embeds,
-                                               conf=cfg["conf"])
+                                               conf=cfg.get("world_conf", 0.15))
             censor_regions(frame, dets, cfg, stamp=stamp)
             if has_ff:
                 proc.stdin.write(frame.tobytes())
