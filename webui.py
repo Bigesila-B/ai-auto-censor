@@ -21,10 +21,32 @@ import numpy as np
 from censor_core import (Detector, LABELS, DEFAULT_CLASSES,
                          ALLOWED_RESOLUTIONS, build_cfg, censor_regions, ensure_model)
 from media_core import process_gif, process_video, _find_ffmpeg
+from yolo_world import (normalize_world_classes, get_world_detector,
+                        WORLD_PREFIX)
 
 ensure_model()
 detector = Detector()  # 640m @ 640，每次请求可按参数切换推理分辨率
 HAS_FFMPEG = _find_ffmpeg() is not None
+
+
+def _detect_combined(img, cfg):
+    """NudeNet + YOLO-World（可选）合并检测。
+
+    cfg["world_classes"] 为空时与原 detector.detect 行为完全一致（零开销）。
+    非空时附加 YOLO-World 检测；模型缺失/下载失败抛 RuntimeError（由调用方
+    转为任务失败并提示用户）。
+    返回 (合并检测结果, 启用的 WORLD 类别标识列表)。
+    """
+    detector.resolution = cfg["res"]
+    detections = detector.detect(img, conf=cfg["conf"])
+    world_words = cfg.get("world_classes") or []
+    if not world_words:
+        return detections, []
+    wd = get_world_detector()
+    embeds = wd.get_embeds(world_words)
+    world_dets = wd.detect(img, world_words, embeds=embeds, conf=cfg["conf"])
+    enabled = [WORLD_PREFIX + w for w in world_words]
+    return detections + world_dets, enabled
 
 # ---------------- 媒体任务（GIF/视频） ----------------
 MEDIA_ROOT = Path(tempfile.mkdtemp(prefix="censor_media_"))
@@ -104,12 +126,24 @@ def _media_worker(job_id, data, kind, cfg, stamp):
             job["pct"] = min(99, int(done * 100 / max(1, total)))
 
     try:
+        # YOLO-World 懒加载放在任务线程里做（下载可能耗时，避免卡 HTTP 响应）
+        world_words = cfg.get("world_classes") or []
+        world_detector = get_world_detector() if world_words else None
+        world_embeds = (world_detector.get_embeds(world_words)
+                        if world_detector else None)
+        enabled_world = [WORLD_PREFIX + w for w in world_words]
+        if enabled_world and cfg["classes"] is not None:
+            cfg["classes"] = list(cfg["classes"]) + enabled_world
         detector.resolution = cfg["res"]
         if kind == "gif":
-            out, ext, info = process_gif(data, cfg, detector, stamp=stamp, progress=cb)
+            out, ext, info = process_gif(data, cfg, detector, stamp=stamp,
+                                         progress=cb, world=world_detector,
+                                         world_embeds=world_embeds)
         else:
             out, ext, info = process_video(data, cfg, detector, stamp=stamp,
-                                           progress=cb, prefer=cfg["vfmt"])
+                                           progress=cb, prefer=cfg["vfmt"],
+                                           world=world_detector,
+                                           world_embeds=world_embeds)
         # job_id 是 uuid hex，ext 只可能来自 {"gif","webm","mp4"}
         path = MEDIA_ROOT / (job_id + "." + ext)
         path.write_bytes(out)
@@ -305,6 +339,8 @@ footer{color:var(--dim);font-size:11px;text-align:center;padding:18px 0 26px}
 .set-row input[type=range]{flex:1}
 .set-actions{display:flex;gap:8px;margin-top:16px}
 .set-actions .mini{flex:1;text-align:center;padding:8px 0}
+#worldClasses{width:100%;box-sizing:border-box;background:var(--panel2);color:var(--text);
+  border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font:inherit}
 
 /* 灯箱（点击卡片全图预览） */
 #lightbox{position:fixed;inset:0;background:rgba(6,8,12,.9);z-index:80;display:none;
@@ -397,6 +433,11 @@ footer{color:var(--dim);font-size:11px;text-align:center;padding:18px 0 26px}
     <button type="button" class="mini" id="allCls">全选</button>
     <button type="button" class="mini" id="defCls">默认（隐私部位）</button>
   </div>
+  <div class="sec">自定义类别（YOLO-World）</div>
+  <input type="text" id="worldClasses" class="tinput" spellcheck="false"
+         placeholder="英文逗号分隔，如: gun, knife, face">
+  <div class="note" style="margin:4px 0 10px">用 AI 检测任意目标并打码（需填英文，如 gun=枪、face=人脸）。
+    首次使用会自动下载约 300MB 模型，之后按填写的词自动缓存。留空则不启用。</div>
 
   <div class="actions ai-only">
     <button type="button" class="mini" id="downloadAll">打包下载全部</button>
@@ -631,12 +672,14 @@ function readSettings(){
     strength: $("strength").value, margin: $("margin").value,
     color: $("color").value, conf: $("conf").value, res: $("res").value,
     classes: [...$("classes").querySelectorAll(".chip.on")].map(c => c.dataset.cls),
+    world: $("worldClasses").value.trim(),
   };
 }
 function paramsOf(s, assetId){
   const p = new URLSearchParams({ mode: s.mode, strength: s.strength, margin: s.margin,
     color: s.color, conf: s.conf, res: s.res, classes: s.classes.join(","),
     fmt: SET.imgFmt, quality: SET.jpgQuality, vfmt: SET.vidFmt });
+  if (s.world) p.set("world", s.world);
   if (assetId) p.set("asset", assetId);
   return p;
 }
@@ -1325,6 +1368,7 @@ if (SET.remember && SET.ai){
   if (a.conf != null) $("conf").value = a.conf;
   if (a.res && ALLOWED_RES.includes(a.res)) $("res").value = a.res;
   if (Array.isArray(a.classes) && a.classes.length) renderClasses(a.classes);
+  if (typeof a.world === "string") $("worldClasses").value = a.world;
   shown("strength"); shown("margin", "%"); shown("conf");
 }
 refreshModeUI();
@@ -1477,6 +1521,7 @@ class Handler(BaseHTTPRequestHandler):
                     if "classes" in q else None,
             conf=q.get("conf", ["0.25"])[0],
             asset=q.get("asset", [None])[0],
+            world_classes=q.get("world", [""])[0],
         )
         try:
             cfg["res"] = int(q.get("res", ["640"])[0])
@@ -1565,8 +1610,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": err})
                 return
             t0 = time.time()
-            detector.resolution = cfg["res"]
-            detections = detector.detect(img, conf=cfg["conf"])
+            try:
+                detections, enabled_world = _detect_combined(img, cfg)
+            except RuntimeError as e:
+                self._json(400, {"error": str(e)})
+                return
+            if enabled_world:
+                cfg["classes"] = list(cfg["classes"]) + enabled_world
             censored_count = censor_regions(img, detections, cfg, stamp=stamp)
             if cfg["fmt"] == "png":
                 ok, buf = cv2.imencode(".png", img)

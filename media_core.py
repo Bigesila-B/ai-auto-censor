@@ -40,8 +40,13 @@ def _default_detect_every(kind, n):
     return max(1, min(15, round(n / 6)))
 
 
-def process_gif(data, cfg, detector, stamp=None, detect_every=None, progress=None):
-    """GIF 打码：PIL 逐帧检测/打码后重新编码为 GIF。返回 (bytes, "gif", info)"""
+def process_gif(data, cfg, detector, stamp=None, detect_every=None, progress=None,
+                world=None, world_embeds=None):
+    """GIF 打码：PIL 逐帧检测/打码后重新编码为 GIF。返回 (bytes, "gif", info)
+
+    world: 可选 yolo_world.WorldDetector（启用自定义类别时传入），
+    world_embeds: 对应的文本嵌入（多帧复用，避免每帧重算）。
+    """
     if not HAS_PIL:
         raise RuntimeError("处理 GIF 需要 Pillow（pip install pillow）")
     im = Image.open(io.BytesIO(data))
@@ -55,6 +60,10 @@ def process_gif(data, cfg, detector, stamp=None, detect_every=None, progress=Non
         bgr = cv2.cvtColor(np.array(im.convert("RGB")), cv2.COLOR_RGB2BGR)
         if i % every == 0:
             dets = detector.detect(bgr, conf=cfg["conf"])
+            if world is not None and cfg.get("world_classes"):
+                dets = dets + world.detect(bgr, cfg["world_classes"],
+                                           embeds=world_embeds,
+                                           conf=cfg["conf"])
         censor_regions(bgr, dets, cfg, stamp=stamp)
         frames.append(Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
         if progress:
@@ -68,7 +77,7 @@ def process_gif(data, cfg, detector, stamp=None, detect_every=None, progress=Non
 
 
 def process_video(data, cfg, detector, stamp=None, detect_every=None, progress=None,
-                  prefer="webm"):
+                  prefer="webm", world=None, world_embeds=None):
     """视频打码：OpenCV 逐帧处理。
 
     输入统一写入临时目录内的固定名文件（OpenCV 的 ffmpeg 后端按内容探测容器，
@@ -76,6 +85,7 @@ def process_video(data, cfg, detector, stamp=None, detect_every=None, progress=N
     编码优先级：有 ffmpeg（imageio-ffmpeg 自带或系统）-> 一律 H.264 mp4
     （含音频，重编码 aac）；无 ffmpeg 时按 prefer 选择：webm（VP80，浏览器
     可预览，无音频，失败退 mp4v）或直接 mp4（mp4v，体积小但通常无法预览）。
+    world/world_embeds: 启用 YOLO-World 自定义类别时传入（同 GIF）。
     返回 (bytes, 扩展名, info)
     """
     ff = _find_ffmpeg()
@@ -143,6 +153,10 @@ def process_video(data, cfg, detector, stamp=None, detect_every=None, progress=N
                 break
             if i % every == 0:
                 dets = detector.detect(frame, conf=cfg["conf"])
+                if world is not None and cfg.get("world_classes"):
+                    dets = dets + world.detect(frame, cfg["world_classes"],
+                                               embeds=world_embeds,
+                                               conf=cfg["conf"])
             censor_regions(frame, dets, cfg, stamp=stamp)
             if has_ff:
                 proc.stdin.write(frame.tobytes())

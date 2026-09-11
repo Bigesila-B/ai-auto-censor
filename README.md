@@ -10,6 +10,7 @@
   - 打码方式：马赛克 / 高斯模糊 / 纯色填充（自定义颜色）/ **图片遮挡**（上传一张图，等比例放大盖住检测区域）
   - 强度、边缘外扩、检测阈值、推理分辨率全部可调
   - 打码类别 18 类可勾选（默认仅隐私部位，脸 / 四肢等按需添加）
+  - **自定义类别（YOLO-World 开放词汇检测）**：填任意英文词（如 `gun, knife, face` 车牌、logo 等）即可检测并打码，首次使用自动下载模型，常用词自动缓存提速
   - GIF 逐帧打码；视频逐帧打码（每秒约 6 次检测 + 框跟踪，兼顾速度与召回），实时进度显示
 - **手动模式**：画布编辑器，五种画笔（色彩 / 马赛克 / 模糊 / 图片 / 橡皮）手动打码或修补 AI 漏检
   - 可先"AI 预打码"再手动补差；橡皮只擦手动笔迹，不伤 AI 层
@@ -35,7 +36,7 @@
 
 ```bash
 # 1. 安装依赖（Python 3.9+）
-pip install numpy opencv-python onnxruntime Pillow
+pip install numpy opencv-python onnxruntime Pillow tokenizers
 # 国内网络可加清华镜像：-i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 2. 下载模型（任选其一）
@@ -57,6 +58,7 @@ python webui.py 8080 --lan   # 允许局域网访问（设置里也能切换）
 python auto_censor.py 图片.jpg --mode mosaic --strength 35 --margin 15
 python auto_censor.py a.jpg b.png --mode solid --color ff0000
 python auto_censor.py a.jpg --mode img --stamp 遮挡图.png
+python auto_censor.py a.jpg --world "gun,face"   # YOLO-World 自定义类别（英文）
 python auto_censor.py --list-classes   # 查看全部可打码类别
 ```
 
@@ -71,7 +73,7 @@ python auto_censor.py --list-classes   # 查看全部可打码类别
 python selftest.py
 ```
 
-覆盖参数校验、三种打码渲染、图片遮挡、检测器边界、HTTP 接口、GIF / 视频任务、输出格式等（当前 73 项断言）。
+覆盖参数校验、三种打码渲染、图片遮挡、检测器边界、YOLO-World 自定义类别、HTTP 接口、GIF / 视频任务、输出格式等（当前 89 项断言）。
 
 > 想给本项目贡献代码 / 接手开发？请看 [DEVELOPMENT.md](DEVELOPMENT.md)：架构说明、HTTP 接口、安全约定与发布流程。
 
@@ -80,6 +82,7 @@ python selftest.py
 ```
 webui.py        网页服务（标准库 http.server，无框架）
 censor_core.py  检测 + 打码渲染核心（被 web / CLI 共用）
+yolo_world.py   YOLO-World 开放词汇检测（自定义英文类别，可选启用）
 media_core.py   GIF / 视频逐帧处理与编码
 auto_censor.py  命令行入口
 check_deps.py   依赖检测与自动安装

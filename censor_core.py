@@ -246,11 +246,13 @@ def parse_hex_color(color):
 
 
 def build_cfg(mode="mosaic", strength=35, margin=15, color="#000000",
-              classes=None, conf=0.25, asset=None):
+              classes=None, conf=0.25, asset=None, world_classes=None):
     """校验并归一化打码配置，webui 与 CLI 共用。
 
     classes: None 用默认隐私部位集合；["all"] 表示全部类别。
     asset: 图片遮挡模式的遮挡图资源 id（服务端 /asset 返回的 hex）。
+    world_classes: YOLO-World 自定义类别词列表（已由
+        yolo_world.normalize_world_classes 归一化），None 表示不启用。
     """
     if mode not in CENSOR_MODES:
         mode = "mosaic"
@@ -277,6 +279,12 @@ def build_cfg(mode="mosaic", strength=35, margin=15, color="#000000",
     asset = str(asset) if asset is not None else None
     if asset is not None and not (asset.isalnum() and len(asset) <= 64):
         asset = None
+    if world_classes in (None, "", []):
+        world_classes = []
+    else:
+        # 支持字符串（逗号分隔）或列表；归一化交给 yolo_world（延迟导入避免循环依赖）
+        from yolo_world import normalize_world_classes
+        world_classes = normalize_world_classes(world_classes)
     return {
         "mode": mode,
         "strength": strength,
@@ -285,6 +293,7 @@ def build_cfg(mode="mosaic", strength=35, margin=15, color="#000000",
         "classes": classes,
         "conf": conf,
         "asset": asset,
+        "world_classes": world_classes,
     }
 
 

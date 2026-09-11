@@ -166,6 +166,64 @@ normal = np.full((600, 800, 3), 100, np.uint8)
 dets_n = det.detect(normal, conf=0.05)
 check("常规图不触发切片（0 检测）", len(dets_n) == 0)
 
+print("== 3c. YOLO-World 自定义类别 ==")
+import yolo_world as _yw
+
+# 类别词归一化
+check("world 词表归一化（trim/小写/去重）",
+      _yw.normalize_world_classes(" Gun , gun , knife ,, ") == ["gun", "knife"])
+check("world 空输入 -> 空列表", _yw.normalize_world_classes(None) == []
+      and _yw.normalize_world_classes(" , ,, ") == [])
+check("world 数量上限 16",
+      len(_yw.normalize_world_classes(",".join(f"w{i}" for i in range(30)))) == 16)
+check("world 单词限长 64",
+      all(len(w) <= _yw.MAX_WORD_LEN
+          for w in _yw.normalize_world_classes("x" * 200 + ",ok")))
+
+# build_cfg 集成
+cfg_w = build_cfg(world_classes="Gun, knife")
+check("build_cfg 归一化 world_classes", cfg_w["world_classes"] == ["gun", "knife"])
+check("build_cfg 缺省 world_classes 为空", build_cfg()["world_classes"] == [])
+
+# 下载源 SSRF 校验
+from censor_core import _host_allowed
+check("模型下载源全部通过 SSRF 校验",
+      all(_host_allowed(u) for u in
+          _yw.DETECTOR_SOURCES + _yw.TEXT_MODEL_SOURCES + _yw.TOKENIZER_SOURCES))
+
+# 真实模型检测（模型已就绪时才跑；未下载则提示跳过）
+if all(os.path.exists(p) for p in
+       (_yw.DETECTOR_PATH, _yw.TOKENIZER_PATH, _yw.TEXT_MODEL_PATH)):
+    wd = _yw.get_world_detector()
+    bus = np.full((640, 640, 3), 110, np.uint8)   # 纯色图：无目标
+    d_w = wd.detect(bus, ["gun"], conf=0.5)
+    check("world 纯色图 0 检测", isinstance(d_w, list) and len(d_w) == 0)
+    d_w = wd.detect(np.tile(np.arange(640, dtype=np.uint8)[None, :, None],
+                            (480, 640, 3)), ["person"], conf=0.5)
+    check("world 检测输出框在图界内",
+          all(0 <= d["box"][0] and 0 <= d["box"][1]
+              and d["box"][0] + d["box"][2] <= 640
+              and d["box"][1] + d["box"][3] <= 480 for d in d_w))
+    # 输出格式与 censor_regions 兼容（WORLD: 前缀 + box 四元组）
+    d_fake = [{"class": "WORLD:gun", "score": 0.9, "box": [10, 10, 50, 50]}]
+    cfg_t = build_cfg(mode="solid", color="ff0000", classes=[],
+                      world_classes=["gun"])
+    cfg_t["classes"] = ["WORLD:gun"]
+    n_hit = censor_regions(np.zeros((100, 100, 3), np.uint8), d_fake, cfg_t)
+    check("WORLD: 前缀类别可被 censor_regions 打码", n_hit == 1)
+    # 嵌入缓存命中（第二次调用不重建文本塔）
+    emb1 = wd.get_embeds(["gun", "knife"])
+    emb2 = wd.get_embeds(["gun", "knife"])
+    check("world 嵌入缓存命中", emb1 is emb2 or (emb1 == emb2).all())
+    # 长图切片不崩溃 + 界内
+    d_l = wd.detect(long_img, ["person"], conf=0.5)
+    check("world 长图切片运行不崩溃", isinstance(d_l, list))
+    ok_l = all(0 <= d["box"][1] and d["box"][1] + d["box"][3] <= 2000
+               for d in d_l)
+    check("world 长图框在图界内", ok_l)
+else:
+    print("  [跳过] YOLO-World 模型未下载（首次使用自定义类别时自动下载）")
+
 print("== 4. HTTP 接口 ==")
 import webui  # 会创建 640m 检测器
 
@@ -349,6 +407,22 @@ check("未知任务 404", r_.status == 404)
 code2, j2 = post_media("?kind=video", b"not-a-video")
 st2 = wait_media(j2["id"]) if code2 == 200 and j2.get("id") else {"st": "skip"}
 check("坏视频数据在任务中报失败", st2["st"] == "fail", str(st2))
+
+print("== 6b. 媒体任务 + world 参数回归 ==")
+if all(os.path.exists(p) for p in
+       (_yw.DETECTOR_PATH, _yw.TOKENIZER_PATH, _yw.TEXT_MODEL_PATH)):
+    # 带 world 参数的 GIF 任务：应正常完成（world 词在纯色图上无检出）
+    code3, j3 = post_media("?kind=gif&mode=solid&color=00ff00&conf=0.1&world=gun,person",
+                           gif_bytes)
+    check("GIF+world 任务提交", code3 == 200 and j3.get("id"))
+    st3 = wait_media(j3["id"])
+    check("GIF+world 任务完成", st3["st"] == "done", str(st3.get("err")))
+    # 不带 world（回归：与原行为一致）
+    code4, j4 = post_media("?kind=gif&mode=solid&color=00ff00&conf=0.1", gif_bytes)
+    st4 = wait_media(j4["id"])
+    check("GIF 不带 world 仍正常", st4["st"] == "done", str(st4.get("err")))
+else:
+    print("  [跳过] YOLO-World 模型未下载")
 
 server.shutdown()
 print(f"\n===== 结果: {PASS} 通过, {FAIL} 失败 =====")

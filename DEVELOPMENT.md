@@ -9,7 +9,7 @@
 | 项 | 值 |
 |---|---|
 | 语言 / 环境 | Python 3.9+（开发用 3.10），Windows 为主 |
-| 运行依赖 | numpy、opencv-python、onnxruntime、Pillow、imageio-ffmpeg |
+| 运行依赖 | numpy、opencv-python、onnxruntime、Pillow、imageio-ffmpeg、tokenizers（YOLO-World 自定义类别） |
 | 检测模型 | NudeNet 640m.onnx（约 100MB，启动时自动下载）/ 回退 320n.onnx |
 | 前端 | 纯 HTML/JS 单页（嵌在 webui.py 的 `INDEX_HTML` 字符串里），无框架、无构建 |
 | 后端 | Python 标准库 `http.server`（ThreadingHTTPServer），无框架 |
@@ -21,10 +21,11 @@
 |---|---|---|
 | `webui.py` | 网页服务 + 前端全部逻辑（单文件前后端） | 核心，最大 |
 | `censor_core.py` | 检测核心：模型加载、推理、NMS、打码渲染、长图切片 | 核心 |
+| `yolo_world.py` | YOLO-World 开放词汇检测（自定义英文类别 + CLIP 文本嵌入 + 缓存） | 核心（可选启用） |
 | `media_core.py` | GIF / 视频逐帧处理与编码 | 核心 |
 | `auto_censor.py` | 命令行入口 | 辅助 |
 | `check_deps.py` | 依赖检测与自动安装 | 辅助 |
-| `selftest.py` | 自动化自测（73 项断言） | 质量门 |
+| `selftest.py` | 自动化自测（89 项断言） | 质量门 |
 | `启动打码工作台.bat` | Windows 一键启动 | 辅助 |
 
 ---
@@ -33,7 +34,7 @@
 
 ```bash
 # 安装依赖（有 check_deps 可自动装）
-pip install numpy opencv-python onnxruntime Pillow imageio-ffmpeg
+pip install numpy opencv-python onnxruntime Pillow imageio-ffmpeg tokenizers
 
 # 启动网页版（默认 8080；--lan 允许局域网访问）
 python webui.py 8080 --lan
@@ -42,7 +43,7 @@ python webui.py 8080 --lan
 python auto_censor.py 图片.jpg --mode mosaic --strength 35
 ```
 
-**务必运行自测**：`python selftest.py`（73 项断言，覆盖检测/渲染/接口/媒体任务），提交前必须全绿。
+**务必运行自测**：`python selftest.py`（89 项断言，覆盖检测/渲染/接口/媒体任务/YOLO-World），提交前必须全绿。
 
 ---
 
@@ -79,7 +80,20 @@ python auto_censor.py 图片.jpg --mode mosaic --strength 35
 | mosaic | 缩块后最近邻放大（块大小随 `strength` 与图片尺寸缩放） |
 | blur | GaussianBlur（核随 strength 与尺寸，偶数自动-1） |
 
-### 3.2 media_core.py —— GIF / 视频
+### 3.2 yolo_world.py —— YOLO-World 开放词汇检测（可选启用）
+
+两阶段 prompt-then-detect：CLIP 文本塔编码类别词 → 检测器按嵌入检测。仅在用户填写自定义类别时才加载模型/下载权重，未使用时零开销。
+
+- `normalize_world_classes(raw)`：任意输入 → 归一化词列表（trim/小写/去重/限长 64/最多 16 个）
+- `ensure_models()`：检测器（48.8MB yolov8s-worldv2.onnx）与 CLIP 文本塔（254MB fp32 Xenova/clip-vit-base-patch32）+ tokenizer 自动下载；源列表镜像优先，全部过 `_host_allowed`
+- `TextEncoder`：tokenizer.json（自带 BOS/EOS post-processor，**不要再手动加 BOS**——曾因重复 BOS 导致嵌入全错）+ 文本塔 ONNX → [K,512] **L2 归一化**嵌入
+- `WorldDetector`：进程内常驻 session，`detect(image, words, embeds, conf, iou)` 输出与 NudeNet 格式一致；class 标识带 `WORLD:` 前缀与 18 类隔离；letterbox 640 预处理；长图切片规则与 censor_core 相同
+- 嵌入缓存 `yolo_world/embeds.npz`：类名元组 JSON → 嵌入矩阵；命中缓存零文本开销
+- **嵌入必须 L2 归一化**（检测器图内 ContrastiveHead 期望单位向量）；**类别词必须与图片内容语义匹配**——纯色/噪声图上任何词都近 0 分，这是正常行为（调参时别被误导）
+- `get_world_detector()`：懒加载单例（线程锁保护）
+- CPU 速度：约 100~300ms/帧（640 分辨率，K 个类别词只影响输出通道数，速度基本不变）
+
+### 3.3 media_core.py —— GIF / 视频
 
 - `_find_ffmpeg()`：优先 `imageio-ffmpeg` 自带二进制，其次系统 PATH。**视频带音频靠它**
 - `_default_detect_every(kind, n)`：检测帧距——视频约每秒 6 次、GIF 全程约 10 次；其余帧沿用最近检测框（性能关键，别改成逐帧检测，除非有 GPU）
@@ -104,7 +118,7 @@ python auto_censor.py 图片.jpg --mode mosaic --strength 35
 | GET `/video/result?id=` | 下载结果文件（GIF/MP4/WebM） |
 | GET/POST `/lan?mode=on|off` | 查询/切换局域网模式（切换用 `os.execv` 重启自身） |
 
-**cfg 查询参数**：`mode strength margin color conf res classes(逗号分隔) fmt(jpg|png) quality vfmt(webm|mp4) asset(id)`
+**cfg 查询参数**：`mode strength margin color conf res classes(逗号分隔) fmt(jpg|png) quality vfmt(webm|mp4) asset(id) world(自定义英文类别，逗号分隔，可选)`
 
 **前端结构**（`INDEX_HTML` 的 `<script>` 内）：
 - 主题：默认跟随系统 `prefers-color-scheme`，手动切换写 localStorage `cb-theme`

@@ -8,6 +8,7 @@
 #   --conf 0.04-0.9            检测置信度阈值，越低越敏感（默认 0.25）
 #   --res 320|640|960|1280     推理分辨率，越高越准越慢（默认 640）
 #   --classes A,B,...          打码类别；"all"=全部；缺省=隐私部位五类
+#   --world "gun,face"         YOLO-World 自定义类别（英文），与 --classes 并用
 #   --stamp 图片路径           mode=img 时使用的遮挡图片
 #   --fmt jpg|png              输出图片格式（默认 jpg）
 #   --quality 40-100           jpg 质量（默认 92）
@@ -33,6 +34,8 @@ parser.add_argument("--conf", type=float, default=0.25, help="检测置信度阈
 parser.add_argument("--res", type=int, default=640, help="推理分辨率")
 parser.add_argument("--classes", default=None,
                     help='打码类别，逗号分隔；"all"=全部；缺省=隐私部位')
+parser.add_argument("--world", default=None,
+                    help='YOLO-World 自定义类别（英文，逗号分隔，如 "gun,face"）')
 parser.add_argument("--stamp", default=None,
                     help="mode=img 时的遮挡图片路径")
 parser.add_argument("--fmt", default="jpg", choices=["jpg", "png"],
@@ -61,7 +64,8 @@ if args.classes is not None:
         else [c.strip() for c in args.classes.split(",") if c.strip()]
 
 cfg = build_cfg(mode=args.mode, strength=args.strength, margin=args.margin,
-                color=args.color, classes=classes, conf=args.conf)
+                color=args.color, classes=classes, conf=args.conf,
+                world_classes=args.world)
 stamp = None
 if args.stamp:
     stamp = cv2.imread(args.stamp)
@@ -72,6 +76,14 @@ elif args.mode == "img":
     print("mode=img 需要提供 --stamp 遮挡图片")
     sys.exit(1)
 detector = Detector(inference_resolution=args.res)
+world_detector = world_embeds = None
+if cfg["world_classes"]:
+    from yolo_world import get_world_detector, WORLD_PREFIX
+    print(f"YOLO-World 自定义类别: {cfg['world_classes']}（首次使用需下载模型）")
+    world_detector = get_world_detector()
+    world_embeds = world_detector.get_embeds(cfg["world_classes"])
+    cfg["classes"] = list(cfg["classes"]) + [WORLD_PREFIX + w
+                                             for w in cfg["world_classes"]]
 
 for path in args.images:
     img = cv2.imread(path)
@@ -79,6 +91,9 @@ for path in args.images:
         print(f"{path}: 无法读取，跳过")
         continue
     detections = detector.detect(img, conf=cfg["conf"])
+    if world_detector is not None:
+        detections = detections + world_detector.detect(
+            img, cfg["world_classes"], embeds=world_embeds, conf=cfg["conf"])
     print(f"\n{path}: 检测到 {len(detections)} 个目标")
     for d in sorted(detections, key=lambda v: -v["score"]):
         print(f"  {d['class']}  score={d['score']:.2f}  box={d['box']}")

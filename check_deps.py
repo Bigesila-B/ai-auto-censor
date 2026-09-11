@@ -4,6 +4,7 @@
 # 注：pkg 只来自本文件内写死的 REQUIRED 清单，不含任何用户输入；
 #     安装通过 runpy 在进程内调用 pip，不执行任何 shell 命令。
 import importlib
+import os
 import runpy
 import shutil
 import sys
@@ -14,6 +15,7 @@ REQUIRED = [
     ("onnxruntime", "onnxruntime"),
     ("PIL", "Pillow"),  # GIF 打码需要
     ("imageio_ffmpeg", "imageio-ffmpeg"),  # 自带 ffmpeg，视频输出带音频
+    ("tokenizers", "tokenizers"),  # YOLO-World 自定义类别的文本编码
 ]
 MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
@@ -86,6 +88,19 @@ def main():
     except Exception as e:
         print(f"  [警告] 模型检查未完成：{e}")
         print("         启动服务后仍会自动重试下载")
+
+    # YOLO-World 模型（可选：仅在用户使用自定义类别时才需要，缺失不阻塞启动）
+    print("\n== YOLO-World（自定义类别，可选） ==")
+    try:
+        from yolo_world import DETECTOR_PATH, TOKENIZER_PATH, TEXT_MODEL_PATH
+        have = all(os.path.exists(p) for p in
+                   (DETECTOR_PATH, TOKENIZER_PATH, TEXT_MODEL_PATH))
+        if have:
+            print("  [OK]   模型已就绪（使用自定义类别即时可用）")
+        else:
+            print("  [提示] 模型未下载（约 300MB）：首次使用自定义类别时自动下载")
+    except Exception as e:
+        print(f"  [提示] 检查跳过：{e}")
 
     # 可选组件
     print("\n== 可选组件 ==")
