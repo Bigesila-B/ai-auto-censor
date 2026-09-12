@@ -78,10 +78,12 @@ elif args.mode == "img":
 detector = Detector(inference_resolution=args.res)
 world_detector = world_embeds = None
 if cfg["world_classes"]:
-    from yolo_world import get_world_detector, expand_words, WORLD_PREFIX
+    from yolo_world import (get_world_detector, expand_words,
+                            WORLD_RESOLUTION, WORLD_PREFIX)
     world_words = expand_words(cfg["world_classes"])
     print(f"YOLO-World 自定义类别: {world_words}（首次使用需下载模型）")
     world_detector = get_world_detector()
+    world_detector.resolution = max(WORLD_RESOLUTION, args.res)
     world_embeds = world_detector.get_embeds(world_words)
     cfg["world_classes"] = world_words
     cfg["classes"] = list(cfg["classes"]) + [WORLD_PREFIX + w

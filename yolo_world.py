@@ -86,8 +86,10 @@ def with_bg(words):
     return list(words) + [BG_CLASS], len(words)
 
 
-# 检测器输入分辨率（与 NudeNet 默认一致，CPU 速度可接受）
-WORLD_RESOLUTION = 640
+# 检测器默认输入分辨率。实测（zidane 人脸）：960 分数 0.374 / 1280 达 0.486，
+# 远高于 640 的 0.285（小目标受益明显），代价是耗时 137ms -> 241/402ms。
+# 默认 960；调用方可按 cfg 分辨率滑块上调（见 webui 的 max(960, res)）。
+WORLD_RESOLUTION = 960
 
 
 def normalize_world_classes(raw):
@@ -230,12 +232,13 @@ class _EmbedCache:
 class WorldDetector:
     """YOLO-World-S 检测器。进程内常驻，线程安全（推理锁串行化）。"""
 
-    def __init__(self):
+    def __init__(self, resolution=WORLD_RESOLUTION):
         if not os.path.exists(DETECTOR_PATH):
             ensure_models()
         self.session = onnxruntime.InferenceSession(
             DETECTOR_PATH, providers=["CPUExecutionProvider"])
         self.input_name = self.session.get_inputs()[0].name
+        self.resolution = resolution            # letterbox 输入边长（可上调）
         self.embed_cache = _EmbedCache()
         self._text_encoder = None               # 懒创建
         self._infer_lock = threading.Lock()
@@ -273,17 +276,17 @@ class WorldDetector:
                          ox=0, oy=0, img_w=w, img_h=h)
 
     def _preprocess(self, mat):
-        """letterbox 到 WORLD_RESOLUTION：RGB、/255、保持长宽比、灰色填充。"""
+        """letterbox 到 self.resolution：RGB、/255、保持长宽比、灰色填充。"""
         h, w = mat.shape[:2]
         if mat.ndim == 2:
             mat = cv2.cvtColor(mat, cv2.COLOR_GRAY2BGR)
         rgb = cv2.cvtColor(mat, cv2.COLOR_BGR2RGB)
-        scale = min(WORLD_RESOLUTION / h, WORLD_RESOLUTION / w)
+        scale = min(self.resolution / h, self.resolution / w)
         nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
         resized = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        pad_w = WORLD_RESOLUTION - nw
-        pad_h = WORLD_RESOLUTION - nh
-        canvas = np.full((WORLD_RESOLUTION, WORLD_RESOLUTION, 3), 114,
+        pad_w = self.resolution - nw
+        pad_h = self.resolution - nh
+        canvas = np.full((self.resolution, self.resolution, 3), 114,
                          dtype=np.uint8)
         canvas[:nh, :nw] = resized
         blob = canvas.astype(np.float32) / 255.0

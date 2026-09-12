@@ -22,7 +22,7 @@ from censor_core import (Detector, LABELS, DEFAULT_CLASSES,
                          ALLOWED_RESOLUTIONS, build_cfg, censor_regions, ensure_model)
 from media_core import process_gif, process_video, _find_ffmpeg
 from yolo_world import (normalize_world_classes, expand_words,
-                        get_world_detector, WORLD_PREFIX)
+                        get_world_detector, WORLD_RESOLUTION, WORLD_PREFIX)
 
 ensure_model()
 detector = Detector()  # 640m @ 640，每次请求可按参数切换推理分辨率
@@ -44,6 +44,7 @@ def _detect_combined(img, cfg):
         return detections, []
     all_words = expand_words(world_words)
     wd = get_world_detector()
+    wd.resolution = max(WORLD_RESOLUTION, cfg["res"])   # 高分辨率提升小目标召回
     embeds = wd.get_embeds(all_words)
     world_dets = wd.detect(img, all_words, embeds=embeds,
                            conf=cfg.get("world_conf", 0.15))
@@ -131,6 +132,8 @@ def _media_worker(job_id, data, kind, cfg, stamp):
         # YOLO-World 懒加载放在任务线程里做（下载可能耗时，避免卡 HTTP 响应）
         world_words = expand_words(cfg.get("world_classes") or [])
         world_detector = get_world_detector() if world_words else None
+        if world_detector:
+            world_detector.resolution = max(WORLD_RESOLUTION, cfg["res"])
         world_embeds = (world_detector.get_embeds(world_words)
                         if world_detector else None)
         enabled_world = [WORLD_PREFIX + w for w in world_words]
@@ -441,7 +444,8 @@ footer{color:var(--dim);font-size:11px;text-align:center;padding:18px 0 26px}
          placeholder="英文逗号分隔，如: gun, knife, face">
   <div class="note" style="margin:4px 0 10px">用 AI 检测任意目标并打码（需填英文，如 gun=枪、face=人脸）。
     单复数会自动补同义词（如 foot 自动加 feet）。首次使用会自动下载约 300MB 模型，
-    之后按填写的词自动缓存。留空则不启用。自定义类别使用固定敏感度（不受上方阈值滑块影响）。</div>
+    之后按填写的词自动缓存。留空则不启用。自定义类别使用固定敏感度（不受上方阈值滑块影响）；
+    检测分辨率默认 960，把"分辨率"滑到 1280 可进一步提升小目标（人脸等）召回。</div>
 
   <div class="actions ai-only">
     <button type="button" class="mini" id="downloadAll">打包下载全部</button>

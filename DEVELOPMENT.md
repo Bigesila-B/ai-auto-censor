@@ -87,7 +87,9 @@ python auto_censor.py 图片.jpg --mode mosaic --strength 35
 - `normalize_world_classes(raw)`：任意输入 → 归一化词列表（trim/小写/去重/限长 64/最多 16 个）
 - `ensure_models()`：检测器（48.8MB yolov8s-worldv2.onnx）与 CLIP 文本塔（254MB fp32 Xenova/clip-vit-base-patch32）+ tokenizer 自动下载；源列表镜像优先，全部过 `_host_allowed`
 - `TextEncoder`：tokenizer.json（自带 BOS/EOS post-processor，**不要再手动加 BOS**——曾因重复 BOS 导致嵌入全错）+ 文本塔 ONNX → [K,512] **L2 归一化**嵌入
-- `WorldDetector`：进程内常驻 session，`detect(image, words, embeds, conf, iou)` 输出与 NudeNet 格式一致；class 标识带 `WORLD:` 前缀与 18 类隔离；letterbox 640 预处理；长图切片规则与 censor_core 相同
+- `WorldDetector`：进程内常驻 session，`detect(image, words, embeds, conf, iou)` 输出与 NudeNet 格式一致；class 标识带 `WORLD:` 前缀与 18 类隔离；letterbox 预处理（**默认 960**，调用方按 `max(WORLD_RESOLUTION, cfg['res'])` 上调——小目标分数随分辨率显著提升：face 640→0.29 / 960→0.37 / 1280→0.49）；长图切片规则与 censor_core 相同
+- **txt_feats 必须尾部追加空串背景类**（`BG_CLASS`/`with_bg`）：部分词（face 等）没有背景锚时 sigmoid 分数整体为 0；但 bg 也会压低 person 等词的分数 → `world_conf = min(滑块 conf, 0.15)` 与 NudeNet 阈值解耦（`build_cfg` 返回）
+- **同义词表 `SYNONYMS`/`expand_words`**：单数词响应弱于复数（foot 0.17 vs feet 0.33），检测前自动扩展
 - 嵌入缓存 `yolo_world/embeds.npz`：类名元组 JSON → 嵌入矩阵；命中缓存零文本开销
 - **嵌入必须 L2 归一化**（检测器图内 ContrastiveHead 期望单位向量）；**类别词必须与图片内容语义匹配**——纯色/噪声图上任何词都近 0 分，这是正常行为（调参时别被误导）
 - `get_world_detector()`：懒加载单例（线程锁保护）
