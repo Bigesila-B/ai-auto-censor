@@ -616,6 +616,7 @@ function setRunMode(m){
   for (const b of $("runmode").children) b.classList.toggle("on", b.dataset.run === m);
   $("modeNote").textContent = modeNotes[m];
   $("start").textContent = m === "ai" ? "开始打码" : "开始处理 GIF/视频";
+  for (const j of jobs) if (!j.media) paint(j);   // 刷新图片卡片的 pick 光标样式
   refreshModeUI(); refreshStart();
 }
 $("runmode").addEventListener("click", e => {
@@ -1209,13 +1210,18 @@ function addEdFile(f){
   $("edStrip").appendChild(th);
   return item;
 }
-function loadEditorFromJob(job){ loadEditor(edFiles.find(x => x.file === job.file) || addEdFile(job.file)); }
-function loadEditor(item){
+function loadEditorFromJob(job){
+  const item = edFiles.find(x => x.file === job.file) || addEdFile(job.file);
+  // AI 模式已打码的图：直接以打码结果为底图（画笔补差 / 橡皮不伤 AI 层）
+  loadEditor(item, job.st === "done" && job.censUrl ? job.censUrl : null);
+}
+function loadEditor(item, baseSrc){
+  const src = baseSrc || item.url;
   const img = new Image();
   img.onload = () => {
     ed.item = item; ed.baseImg = img;
     ed.w = img.naturalWidth; ed.h = img.naturalHeight;
-    $("edBase").src = item.url;
+    $("edBase").src = src;
     pcanvas.width = ed.w; pcanvas.height = ed.h;
     $("edName").textContent = item.name;
     $("editor").style.display = "";
@@ -1223,7 +1229,7 @@ function loadEditor(item){
     for (const th of $("edStrip").children)
       th.classList.toggle("cur", th.dataset.name === item.name);
   };
-  img.src = item.url;
+  img.src = src;
 }
 
 let drawing = false, lastPt = null;
@@ -1387,14 +1393,14 @@ drop.addEventListener("click", () => fileInput.click());
 drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); fileInput.click(); } });
 fileInput.addEventListener("change", () => { addFiles(fileInput.files); fileInput.value = ""; });
 
-/* 点击卡片：手动模式图片载入编辑器，其余打开全图预览灯箱 */
+/* 点击卡片：手动模式图片载入编辑器（已打码的图以结果为底图便于补差），其余打开全图预览灯箱 */
 $("grid").addEventListener("click", e => {
   if (e.target.closest("a") || e.target.closest("button")) return;
   const card = e.target.closest(".card");
   if (!card) return;
   const job = jobs.find(j => j.el === card);
   if (!job) return;
-  if (runMode === "manual" && !job.media && job.st !== "done"){
+  if (runMode === "manual" && !job.media){
     loadEditorFromJob(job);
     return;
   }
